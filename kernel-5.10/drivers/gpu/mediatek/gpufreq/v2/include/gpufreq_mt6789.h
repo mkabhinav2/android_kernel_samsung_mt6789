@@ -154,6 +154,7 @@ struct gpufreq_core_mask_info g_core_mask_table[] = {
 #define GPUFREQ_AVS_ENABLE              (0)
 #else
 #define GPUFREQ_AVS_ENABLE              (1)
+#endif
 
 /**************************************************
  * Aging Sensor Setting
