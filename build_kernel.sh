@@ -82,6 +82,13 @@ cd kernel-5.10
 
 print_msg "$GREEN" "Setting up KernelSU..."
 
+print_msg "$GREEN" "Forcing SELinux permissive..."
+# Patch paths start with kernel-5.10/, and we are already inside it -> -p2
+if ! patch -p2 --forward < ../patches/permissive_5_10.patch; then
+    print_msg "$RED" "permissive_5_10.patch failed to apply, aborting."
+    exit 1
+fi
+
 #print_msg "$GREEN" "Patching up Kernel..."
 #patch -p1 -F 3 < ../patches/syscall_hooks.patch
 #patch -p1 -F 3 < ../patches/new_hooks.patch
