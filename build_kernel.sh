@@ -89,6 +89,13 @@ print_msg "$GREEN" "Modifying configs..."
 --set-val CFI_CLANG n \
 --set-val ARM64_TAGGED_ADDR_ABI y
 
+# Runtime overhead: drop list/memory debug checks and page owner tracking
+./kernel-5.10/scripts/config --file kernel-5.10/arch/arm64/configs/a15_00_defconfig \
+--set-val BUG_ON_DATA_CORRUPTION n \
+--set-val DEBUG_LIST n \
+--set-val PAGE_OWNER n \
+--set-val DEBUG_MEMORY_INIT n
+
 print_msg "$GREEN" "Modified configs ..."
 
 cd kernel-5.10
