@@ -138,7 +138,17 @@ export BUILD_CONFIG="../out/target/product/a15/obj/KERNEL_OBJ/build.config"
 print_msg "$GREEN" "Building Kernel..."
 
 cd ../kernel
-./build/build.sh
+./build/build.sh 2>&1 | tee ../build.log
+build_rc=${PIPESTATUS[0]}
+cd ..
+
+KIMG="out/target/product/a15/obj/KERNEL_OBJ/kernel-5.10/arch/arm64/boot/Image"
+if [ "$build_rc" -ne 0 ] || [ ! -f "$KIMG" ]; then
+    print_msg "$RED" "Kernel build FAILED (rc=$build_rc). First errors:"
+    grep -nE "error:|ld\.lld: error|undefined (symbol|reference)|\*\*\* \[|Error [0-9]+$|fatal:" build.log | head -40
+    echo "::error::Kernel build failed - see build.log artifact"
+    exit 1
+fi
 
 build_end_time=$(date +%s)
 
