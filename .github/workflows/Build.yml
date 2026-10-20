@@ -39,7 +39,7 @@ jobs:
         if: github.event.inputs.CLEAN_BUILD == 'true'
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true
+          preinstalled-runtimes: true
           android: true
           dotnet: true
           haskell: true
@@ -105,3 +105,10 @@ jobs:
             kernel_modules.zip
           if-no-files-found: warn
 
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
