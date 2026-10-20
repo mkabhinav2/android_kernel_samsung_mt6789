@@ -76,6 +76,19 @@ print_msg "$GREEN" "Modifying configs..."
 --set-val DEFAULT_BBR y \
 --set-str DEFAULT_TCP_CONG "bbr" \
 
+# Features Cortex-A76/A55 (MT6789) doesn't have, plus GKI debug options
+./kernel-5.10/scripts/config --file kernel-5.10/arch/arm64/configs/a15_00_defconfig \
+--set-val ARM64_PTR_AUTH n \
+--set-val ARM64_BTI n \
+--set-val ARM64_BTI_KERNEL n \
+--set-val ARM64_MTE n \
+--set-val KASAN n \
+--set-val KASAN_HW_TAGS n \
+--set-val KFENCE n \
+--set-val SHADOW_CALL_STACK n \
+--set-val CFI_CLANG n \
+--set-val ARM64_TAGGED_ADDR_ABI y
+
 print_msg "$GREEN" "Modified configs ..."
 
 cd kernel-5.10
