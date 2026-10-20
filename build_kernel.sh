@@ -77,6 +77,7 @@ print_msg "$GREEN" "Modifying configs..."
 --set-str DEFAULT_TCP_CONG "bbr" \
 
 # Features Cortex-A76/A55 (MT6789) doesn't have, plus GKI debug options
+# NOTE: keep SCS/CFI as in stock; stock vendor_dlkm modules are built with them
 ./kernel-5.10/scripts/config --file kernel-5.10/arch/arm64/configs/a15_00_defconfig \
 --set-val ARM64_PTR_AUTH n \
 --set-val ARM64_BTI n \
@@ -85,8 +86,6 @@ print_msg "$GREEN" "Modifying configs..."
 --set-val KASAN n \
 --set-val KASAN_HW_TAGS n \
 --set-val KFENCE n \
---set-val SHADOW_CALL_STACK n \
---set-val CFI_CLANG n \
 --set-val ARM64_TAGGED_ADDR_ABI y
 
 # Runtime overhead: drop list/memory debug checks and page owner tracking
