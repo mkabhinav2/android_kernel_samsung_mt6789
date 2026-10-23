@@ -103,7 +103,10 @@ print_msg "$GREEN" "Setting up KernelSU..."
 
 print_msg "$GREEN" "Forcing SELinux permissive..."
 # Patch paths start with kernel-5.10/, and we are already inside it -> -p2
-if ! patch -p2 --forward < ../patches/permissive_5_10.patch; then
+# Idempotent: skip if the patch is already applied (e.g. committed to the tree).
+if patch -p2 -R --dry-run -s < ../patches/permissive_5_10.patch >/dev/null 2>&1; then
+    print_msg "$GREEN" "permissive_5_10.patch already applied, skipping."
+elif ! patch -p2 --forward < ../patches/permissive_5_10.patch; then
     print_msg "$RED" "permissive_5_10.patch failed to apply, aborting."
     exit 1
 fi
