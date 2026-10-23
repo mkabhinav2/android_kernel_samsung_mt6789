@@ -740,12 +740,15 @@ config CFI_PERMISSIVE
 	  
 config CFI_STUBS
 	bool "Provide stub symbols for legacy Clang CFI LKMs"
-	depends on MODULES
+	depends on MODULES && !CFI_CLANG
 	default y
 	help
 	  Provides dummy symbols for legacy Clang CFI runtime functions
 	  (__cfi_slowpath, __cfi_check, etc.) so that generic LKMs compiled
 	  against ACK with legacy Clang CFI can load and execute.
+
+	  Not selectable together with CFI_CLANG: kernel/cfi.c already
+	  defines these symbols and linking both fails with duplicate symbols.
 
 	  If unsure, say Y.
 
