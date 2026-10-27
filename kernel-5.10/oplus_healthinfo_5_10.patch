@@ -1,0 +1,515 @@
+From a524a9a80aad7a381fc4d3886b534a3199266c24 Mon Sep 17 00:00:00 2001
+From: Your Name <you@example.com>
+Date: Tue, 27 Oct 2026 13:36:10 +0000
+Subject: [PATCH] proc: add OPlus healthinfo / fg_info for Linux 5.10 GKI
+ (Trinity Engine)
+
+On ColorOS ports/GSIs running on Linux 5.10 GKI, the system resource
+monitor previously displayed a static 1% CPU usage.
+
+Implement the /proc/oplus_healthinfo and /proc/fg_info procfs subsystems
+adapted for Linux 5.10 GKI.
+
+Interfaces: cpu_loading, cpu_info, sched_latency, iowait, dstate,
+fsync_wait, emcdrv_iowait, alloc_wait, iowait_hung, kswapd_loading and
+fg_uids.
+
+- Compute real-time CPU utilization across all online cores via
+  kernel_cpustat differential sampling (25 ms interval), with 100 ms
+  jiffies caching to avoid redundant polling overhead.
+- Populate per-CPU/cluster max frequency via cpufreq_quick_get_max and
+  capacity via arch_scale_cpu_capacity.
+- Add /proc/fg_info/fg_uids with an exported is_fg() symbol for
+  foreground app lifecycle identification.
+
+Userspace: the Trinity Engine visual circle now reports dynamic
+real-time CPU load instead of a static 1%.
+
+Credits:
+- OplusOSS Kernel
+- @ErOneSoul for kernel
+  https://github.com/mkabhinav2/android_kernel_samsung_mt6789
+---
+ kernel-5.10/fs/proc/oplus_healthinfo.c       | 433 +++++++++++++++++++
+ kernel-5.10/include/linux/oplus_healthinfo.h |  29 ++
+ 2 files changed, 462 insertions(+)
+ create mode 100644 kernel-5.10/fs/proc/oplus_healthinfo.c
+ create mode 100644 kernel-5.10/include/linux/oplus_healthinfo.h
+
+diff --git a/kernel-5.10/fs/proc/oplus_healthinfo.c b/kernel-5.10/fs/proc/oplus_healthinfo.c
+new file mode 100644
+index 0000000..f902dd3
+--- /dev/null
++++ b/kernel-5.10/fs/proc/oplus_healthinfo.c
+@@ -0,0 +1,433 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * /proc/oplus_healthinfo/* and /proc/fg_info/fg_uids for Linux 5.10 GKI.
++ *
++ * CPU load is computed by differential sampling of kernel_cpustat over a
++ * 25 ms window. Results are cached for 100 ms so that frequent pollers
++ * (ColorOS Trinity Engine) do not trigger redundant sampling.
++ */
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++#include <linux/cpu.h>
++#include <linux/cpufreq.h>
++#include <linux/kernel_stat.h>
++#include <linux/tick.h>
++#include <linux/sched.h>
++#include <linux/sched/signal.h>
++#include <linux/sched/topology.h>
++#include <linux/mmzone.h>
++#include <linux/delay.h>
++#include <linux/jiffies.h>
++#include <linux/ktime.h>
++#include <linux/math64.h>
++#include <linux/mutex.h>
++#include <linux/spinlock.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/oplus_healthinfo.h>
++
++#define OPLUS_HI_SAMPLE_MS	25
++#define OPLUS_HI_CACHE_JIFFIES	msecs_to_jiffies(100)
++
++/* ------------------------------------------------------------------ */
++/* CPU sampling                                                        */
++/* ------------------------------------------------------------------ */
++
++struct hi_snap {
++	u64 busy[NR_CPUS];
++	u64 total[NR_CPUS];
++	u64 iowait[NR_CPUS];
++	u64 kswapd_ns;
++	u64 wall_ns;
++};
++
++static struct {
++	bool valid;
++	unsigned long stamp;
++	int total_load;
++	int cpu_load[NR_CPUS];
++	int iowait_pct;
++	int kswapd_load;
++} hi_cache;
++
++static struct hi_snap snap_a, snap_b;
++static DEFINE_MUTEX(hi_sample_lock);
++
++static u64 hi_idle_ns(int cpu, u64 *iowait)
++{
++	u64 *cs = kcpustat_cpu(cpu).cpustat;
++	u64 idle_us = -1ULL, io_us = -1ULL, idle, io;
++
++	if (cpu_online(cpu)) {
++		idle_us = get_cpu_idle_time_us(cpu, NULL);
++		io_us = get_cpu_iowait_time_us(cpu, NULL);
++	}
++	idle = (idle_us == -1ULL) ? cs[CPUTIME_IDLE] : idle_us * NSEC_PER_USEC;
++	io = (io_us == -1ULL) ? cs[CPUTIME_IOWAIT] : io_us * NSEC_PER_USEC;
++
++	*iowait = io;
++	return idle + io;
++}
++
++static u64 hi_kswapd_runtime(void)
++{
++	u64 sum = 0;
++	int nid;
++
++	for_each_online_node(nid) {
++		pg_data_t *pgdat = NODE_DATA(nid);
++		struct task_struct *t = pgdat ? READ_ONCE(pgdat->kswapd) : NULL;
++
++		if (t)
++			sum += READ_ONCE(t->se.sum_exec_runtime);
++	}
++	return sum;
++}
++
++static void hi_take_snap(struct hi_snap *s)
++{
++	int cpu;
++
++	for_each_possible_cpu(cpu) {
++		u64 *cs = kcpustat_cpu(cpu).cpustat;
++		u64 io, idle, busy;
++
++		idle = hi_idle_ns(cpu, &io);
++		busy = cs[CPUTIME_USER] + cs[CPUTIME_NICE] +
++		       cs[CPUTIME_SYSTEM] + cs[CPUTIME_IRQ] +
++		       cs[CPUTIME_SOFTIRQ] + cs[CPUTIME_STEAL];
++
++		s->busy[cpu] = busy;
++		s->total[cpu] = busy + idle;
++		s->iowait[cpu] = io;
++	}
++	s->kswapd_ns = hi_kswapd_runtime();
++	s->wall_ns = ktime_get_ns();
++}
++
++static int hi_pct(u64 num, u64 den)
++{
++	if (!den)
++		return 0;
++	return clamp_t(int, div64_u64(num * 100, den), 0, 100);
++}
++
++/* Refresh hi_cache unless it is younger than 100 ms. Caller must not hold the lock. */
++static void hi_refresh(void)
++{
++	u64 sum_busy = 0, sum_total = 0, sum_io = 0;
++	int cpu;
++
++	mutex_lock(&hi_sample_lock);
++
++	if (hi_cache.valid &&
++	    time_before(jiffies, hi_cache.stamp + OPLUS_HI_CACHE_JIFFIES))
++		goto out;
++
++	hi_take_snap(&snap_a);
++	msleep(OPLUS_HI_SAMPLE_MS);
++	hi_take_snap(&snap_b);
++
++	for_each_possible_cpu(cpu) {
++		u64 db, dt, di;
++
++		/* Counters can step backwards across hotplug; treat as idle. */
++		if (snap_b.total[cpu] <= snap_a.total[cpu] ||
++		    snap_b.busy[cpu] < snap_a.busy[cpu]) {
++			hi_cache.cpu_load[cpu] = 0;
++			continue;
++		}
++		db = snap_b.busy[cpu] - snap_a.busy[cpu];
++		dt = snap_b.total[cpu] - snap_a.total[cpu];
++		di = snap_b.iowait[cpu] > snap_a.iowait[cpu] ?
++		     snap_b.iowait[cpu] - snap_a.iowait[cpu] : 0;
++
++		hi_cache.cpu_load[cpu] = hi_pct(db, dt);
++		sum_busy += db;
++		sum_total += dt;
++		sum_io += di;
++	}
++
++	hi_cache.total_load = hi_pct(sum_busy, sum_total);
++	hi_cache.iowait_pct = hi_pct(sum_io, sum_total);
++	hi_cache.kswapd_load = snap_b.kswapd_ns >= snap_a.kswapd_ns ?
++		hi_pct(snap_b.kswapd_ns - snap_a.kswapd_ns,
++		       snap_b.wall_ns - snap_a.wall_ns) : 0;
++	hi_cache.stamp = jiffies;
++	hi_cache.valid = true;
++out:
++	mutex_unlock(&hi_sample_lock);
++}
++
++/* ------------------------------------------------------------------ */
++/* Optional wait accounting (fsync / emmc-ufs / alloc / hung iowait)   */
++/* ------------------------------------------------------------------ */
++
++static atomic64_t hi_cnt[OPLUS_HI_NR_STATS];
++static atomic64_t hi_ns[OPLUS_HI_NR_STATS];
++
++void oplus_hi_account(enum oplus_hi_stat stat, u64 delta_ns)
++{
++	if (stat >= OPLUS_HI_NR_STATS)
++		return;
++	atomic64_inc(&hi_cnt[stat]);
++	atomic64_add(delta_ns, &hi_ns[stat]);
++}
++EXPORT_SYMBOL(oplus_hi_account);
++
++static int hi_stat_show(struct seq_file *m, enum oplus_hi_stat stat)
++{
++	u64 cnt = atomic64_read(&hi_cnt[stat]);
++	u64 ns = atomic64_read(&hi_ns[stat]);
++
++	seq_printf(m, "count: %llu\ntotal_ms: %llu\navg_us: %llu\n",
++		   cnt, div_u64(ns, NSEC_PER_MSEC),
++		   cnt ? div64_u64(ns, cnt * NSEC_PER_USEC) : 0ULL);
++	return 0;
++}
++
++static int fsync_wait_show(struct seq_file *m, void *v)
++{ return hi_stat_show(m, OPLUS_HI_FSYNC_WAIT); }
++static int emcdrv_iowait_show(struct seq_file *m, void *v)
++{ return hi_stat_show(m, OPLUS_HI_EMCDRV_IOWAIT); }
++static int alloc_wait_show(struct seq_file *m, void *v)
++{ return hi_stat_show(m, OPLUS_HI_ALLOC_WAIT); }
++static int iowait_hung_show(struct seq_file *m, void *v)
++{ return hi_stat_show(m, OPLUS_HI_IOWAIT_HUNG); }
++
++/* ------------------------------------------------------------------ */
++/* /proc/oplus_healthinfo/*                                            */
++/* ------------------------------------------------------------------ */
++
++static int cpu_loading_show(struct seq_file *m, void *v)
++{
++	hi_refresh();
++	seq_printf(m, "%d\n", hi_cache.total_load);
++	return 0;
++}
++
++static int cpu_info_show(struct seq_file *m, void *v)
++{
++	int cpu;
++
++	hi_refresh();
++	seq_printf(m, "total_load: %d\n", hi_cache.total_load);
++	for_each_possible_cpu(cpu) {
++		seq_printf(m,
++			   "cpu%d: online=%d load=%d cur_khz=%u max_khz=%u capacity=%lu\n",
++			   cpu, cpu_online(cpu), hi_cache.cpu_load[cpu],
++			   cpufreq_quick_get(cpu), cpufreq_quick_get_max(cpu),
++			   arch_scale_cpu_capacity(cpu));
++	}
++	return 0;
++}
++
++static int sched_latency_show(struct seq_file *m, void *v)
++{
++#ifdef CONFIG_SCHED_INFO
++	struct task_struct *g, *t;
++	u64 delay = 0, pcount = 0;
++	unsigned long nr = 0;
++
++	rcu_read_lock();
++	for_each_process_thread(g, t) {
++		delay += t->sched_info.run_delay;
++		pcount += t->sched_info.pcount;
++		nr++;
++	}
++	rcu_read_unlock();
++
++	seq_printf(m, "tasks: %lu\nrun_delay_ms: %llu\ntimeslices: %llu\navg_latency_us: %llu\n",
++		   nr, div_u64(delay, NSEC_PER_MSEC), pcount,
++		   pcount ? div64_u64(delay, pcount * NSEC_PER_USEC) : 0ULL);
++#else
++	seq_puts(m, "unsupported (CONFIG_SCHED_INFO=n)\n");
++#endif
++	return 0;
++}
++
++static int iowait_show(struct seq_file *m, void *v)
++{
++	struct task_struct *g, *t;
++	unsigned long waiting = 0;
++
++	hi_refresh();
++	rcu_read_lock();
++	for_each_process_thread(g, t) {
++		if (READ_ONCE(t->in_iowait))
++			waiting++;
++	}
++	rcu_read_unlock();
++
++	seq_printf(m, "iowait_pct: %d\ntasks_in_iowait: %lu\n",
++		   hi_cache.iowait_pct, waiting);
++	return 0;
++}
++
++#define HI_DSTATE_LIST_MAX 16
++
++static int dstate_show(struct seq_file *m, void *v)
++{
++	struct task_struct *g, *t;
++	unsigned long nr = 0, listed = 0;
++
++	rcu_read_lock();
++	for_each_process_thread(g, t) {
++		long st = READ_ONCE(t->state);
++
++		if (!(st & TASK_UNINTERRUPTIBLE) || (st & TASK_NOLOAD))
++			continue;
++		nr++;
++		if (listed < HI_DSTATE_LIST_MAX) {
++			seq_printf(m, "  pid=%d tgid=%d comm=%s\n",
++				   t->pid, t->tgid, t->comm);
++			listed++;
++		}
++	}
++	rcu_read_unlock();
++	seq_printf(m, "dstate_tasks: %lu\n", nr);
++	return 0;
++}
++
++static int kswapd_loading_show(struct seq_file *m, void *v)
++{
++	hi_refresh();
++	seq_printf(m, "%d\n", hi_cache.kswapd_load);
++	return 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* /proc/fg_info/fg_uids                                               */
++/* ------------------------------------------------------------------ */
++
++#define HI_MAX_FG_UIDS	64
++#define HI_FG_BUF	1024
++
++static int fg_uid_tbl[HI_MAX_FG_UIDS];
++static int fg_uid_nr;
++static DEFINE_SPINLOCK(fg_uid_lock);
++
++bool is_fg(int uid)
++{
++	unsigned long flags;
++	bool ret = false;
++	int i;
++
++	spin_lock_irqsave(&fg_uid_lock, flags);
++	for (i = 0; i < fg_uid_nr; i++) {
++		if (fg_uid_tbl[i] == uid) {
++			ret = true;
++			break;
++		}
++	}
++	spin_unlock_irqrestore(&fg_uid_lock, flags);
++	return ret;
++}
++EXPORT_SYMBOL(is_fg);
++
++static int fg_uids_show(struct seq_file *m, void *v)
++{
++	unsigned long flags;
++	int i;
++
++	spin_lock_irqsave(&fg_uid_lock, flags);
++	for (i = 0; i < fg_uid_nr; i++)
++		seq_printf(m, "%d%c", fg_uid_tbl[i],
++			   i == fg_uid_nr - 1 ? '\n' : ' ');
++	spin_unlock_irqrestore(&fg_uid_lock, flags);
++	return 0;
++}
++
++static int fg_uids_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, fg_uids_show, NULL);
++}
++
++/* Write a whitespace/comma separated uid list; it replaces the old list. */
++static ssize_t fg_uids_write(struct file *file, const char __user *ubuf,
++			     size_t count, loff_t *ppos)
++{
++	char buf[HI_FG_BUF], *p = buf, *tok;
++	int tmp[HI_MAX_FG_UIDS], nr = 0;
++	unsigned long flags;
++
++	if (!count || count >= sizeof(buf))
++		return -EINVAL;
++	if (copy_from_user(buf, ubuf, count))
++		return -EFAULT;
++	buf[count] = '\0';
++
++	while ((tok = strsep(&p, " ,\t\n")) != NULL) {
++		int uid;
++
++		if (!*tok)
++			continue;
++		if (kstrtoint(tok, 10, &uid) || uid < 0)
++			return -EINVAL;
++		if (nr >= HI_MAX_FG_UIDS)
++			return -E2BIG;
++		tmp[nr++] = uid;
++	}
++
++	spin_lock_irqsave(&fg_uid_lock, flags);
++	memcpy(fg_uid_tbl, tmp, nr * sizeof(int));
++	fg_uid_nr = nr;
++	spin_unlock_irqrestore(&fg_uid_lock, flags);
++
++	return count;
++}
++
++static const struct proc_ops fg_uids_proc_ops = {
++	.proc_open	= fg_uids_open,
++	.proc_read	= seq_read,
++	.proc_write	= fg_uids_write,
++	.proc_lseek	= seq_lseek,
++	.proc_release	= single_release,
++};
++
++/* ------------------------------------------------------------------ */
++/* Registration                                                        */
++/* ------------------------------------------------------------------ */
++
++static const struct {
++	const char *name;
++	int (*show)(struct seq_file *, void *);
++} hi_entries[] = {
++	{ "cpu_loading",	cpu_loading_show },
++	{ "cpu_info",		cpu_info_show },
++	{ "sched_latency",	sched_latency_show },
++	{ "iowait",		iowait_show },
++	{ "dstate",		dstate_show },
++	{ "fsync_wait",		fsync_wait_show },
++	{ "emcdrv_iowait",	emcdrv_iowait_show },
++	{ "alloc_wait",		alloc_wait_show },
++	{ "iowait_hung",	iowait_hung_show },
++	{ "kswapd_loading",	kswapd_loading_show },
++};
++
++static int __init oplus_healthinfo_init(void)
++{
++	struct proc_dir_entry *hi_dir, *fg_dir;
++	int i;
++
++	hi_dir = proc_mkdir("oplus_healthinfo", NULL);
++	if (!hi_dir)
++		return -ENOMEM;
++
++	for (i = 0; i < ARRAY_SIZE(hi_entries); i++)
++		if (!proc_create_single(hi_entries[i].name, 0444, hi_dir,
++					hi_entries[i].show))
++			pr_warn("oplus_healthinfo: failed to create %s\n",
++				hi_entries[i].name);
++
++	fg_dir = proc_mkdir("fg_info", NULL);
++	if (!fg_dir)
++		return -ENOMEM;
++	if (!proc_create("fg_uids", 0666, fg_dir, &fg_uids_proc_ops))
++		pr_warn("oplus_healthinfo: failed to create fg_uids\n");
++
++	return 0;
++}
++late_initcall(oplus_healthinfo_init);
+diff --git a/kernel-5.10/include/linux/oplus_healthinfo.h b/kernel-5.10/include/linux/oplus_healthinfo.h
+new file mode 100644
+index 0000000..0ce05a0
+--- /dev/null
++++ b/kernel-5.10/include/linux/oplus_healthinfo.h
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * OPlus healthinfo / fg_info compatibility layer for Linux 5.10 GKI
++ * (ColorOS Trinity Engine resource monitor).
++ */
++#ifndef _LINUX_OPLUS_HEALTHINFO_H
++#define _LINUX_OPLUS_HEALTHINFO_H
++
++#include <linux/types.h>
++
++enum oplus_hi_stat {
++	OPLUS_HI_FSYNC_WAIT,
++	OPLUS_HI_EMCDRV_IOWAIT,
++	OPLUS_HI_ALLOC_WAIT,
++	OPLUS_HI_IOWAIT_HUNG,
++	OPLUS_HI_NR_STATS,
++};
++
++#ifdef CONFIG_OPLUS_HEALTHINFO
++/* True if @uid is currently listed in /proc/fg_info/fg_uids. */
++bool is_fg(int uid);
++/* Optional hook: account one wait event of @delta_ns nanoseconds. */
++void oplus_hi_account(enum oplus_hi_stat stat, u64 delta_ns);
++#else
++static inline bool is_fg(int uid) { return false; }
++static inline void oplus_hi_account(enum oplus_hi_stat stat, u64 delta_ns) { }
++#endif
++
++#endif /* _LINUX_OPLUS_HEALTHINFO_H */
+-- 
+2.43.0
+
