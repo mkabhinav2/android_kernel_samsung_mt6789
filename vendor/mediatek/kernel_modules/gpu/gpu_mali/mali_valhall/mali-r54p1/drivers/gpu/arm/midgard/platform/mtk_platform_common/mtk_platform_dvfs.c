@@ -16,6 +16,8 @@
 #include <mtk_gpufreq.h>
 #include <mtk_gpu_utility.h>
 #include <platform/mtk_platform_common/mtk_platform_dvfs.h>
+typeof(mtk_get_system_timer_fp) mtk_get_system_timer_fp;
+typeof(ged_dvfs_gpu_freq_dual_commit_fp) ged_dvfs_gpu_freq_dual_commit_fp;
 
 #if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && \
 	IS_ENABLED(CONFIG_MALI_MTK_DVFS_POLICY) && \

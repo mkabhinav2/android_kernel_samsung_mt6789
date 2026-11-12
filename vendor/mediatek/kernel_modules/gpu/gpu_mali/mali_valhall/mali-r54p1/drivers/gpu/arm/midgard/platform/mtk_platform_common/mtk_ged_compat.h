@@ -28,4 +28,5 @@ void gpufreq_dump_infra_status_logbuffer(char *log_buf, int *log_len, int log_si
 #define GPU_PWR_OFF POWER_OFF
 #define GPU_PWR_ON POWER_ON
 #endif
+static inline int irq_mon_aee_period_set(unsigned int irq, unsigned int period){ return 0; }
 #endif

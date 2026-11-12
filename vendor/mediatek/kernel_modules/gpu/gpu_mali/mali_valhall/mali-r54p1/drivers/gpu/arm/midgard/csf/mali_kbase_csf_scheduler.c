@@ -115,10 +115,7 @@ static inline int gpu_metrics_ctx_init(struct kbase_context *kctx)
 	struct kbase_device *kbdev = kctx->kbdev;
 	int ret = 0;
 
-	const struct cred *cred = get_current_cred();
-	const unsigned int aid = cred->euid.val;
-
-	put_cred(cred);
+	const unsigned int aid = __kuid_val(current_euid());
 
 	/* Return early if this is not a Userspace created context */
 	if (unlikely(!kctx->filp))
