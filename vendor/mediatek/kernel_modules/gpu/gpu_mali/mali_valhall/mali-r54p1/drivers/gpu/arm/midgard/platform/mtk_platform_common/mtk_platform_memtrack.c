@@ -4,7 +4,7 @@
  */
 
 #include <trace/hooks/mm.h>
-#include <linux/sec_mm.h>
+/* #include <linux/sec_mm.h> */
 #include <linux/seq_file.h>
 #if IS_ENABLED(CONFIG_PROC_FS)
 #include <linux/proc_fs.h>

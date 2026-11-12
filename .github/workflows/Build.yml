@@ -73,6 +73,8 @@ jobs:
 
       - name: Build and Package
         id: build_chain
+        env:
+          MAKEFLAGS: -k
         run: |
           ./build_kernel.sh
           
