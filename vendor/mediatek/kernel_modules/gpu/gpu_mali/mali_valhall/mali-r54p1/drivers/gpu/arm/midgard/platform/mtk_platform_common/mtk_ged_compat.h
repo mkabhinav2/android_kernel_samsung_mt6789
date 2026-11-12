@@ -20,4 +20,12 @@ int ged_kpi_get_target_fps(void);
 void ged_mali_event_init(void);
 int gpufreq_dual_commit(int gpu_oppidx, int stack_oppidx);
 void gpufreq_dump_infra_status_logbuffer(char *log_buf, int *log_len, int log_size);
+#ifndef GED_POWER_ON
+#define GED_SLEEP 0
+#define GED_POWER_ON 1
+#endif
+#ifndef GPU_PWR_ON
+#define GPU_PWR_OFF POWER_OFF
+#define GPU_PWR_ON POWER_ON
+#endif
 #endif
