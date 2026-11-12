@@ -95,6 +95,9 @@ struct GpuUtilization_Ex {
 	unsigned int util_3d;
 	unsigned int util_ta;
 	unsigned int util_compute;
+	unsigned int util_iter, util_mcu, util_iter_u_mcu;
+	unsigned int util_active_raw, util_iter_raw, util_mcu_raw, util_irq_raw, util_sc_comp_raw, util_l2ext_raw, util_tiler_raw;
+	unsigned long long delta_time;
 };
 
 bool ged_dvfs_cal_gpu_utilization_ex(unsigned int *pui32Loading,

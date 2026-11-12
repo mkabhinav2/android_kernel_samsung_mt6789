@@ -252,7 +252,7 @@ void mtk_common_cal_gpu_utilization(unsigned int *pui32Loading,
 		delta_time;
 	util_ex->util_compute = (100 * (diff->busy_cl[0]+diff->busy_cl[1])) /
 		delta_time;
-	util_ex->delta_time = delta_time << 8;   // 8 = KBASE_PM_TIME_SHIFT
+        util_ex->delta_time = delta_time << 8;   // 8 = KBASE_PM_TIME_SHIFT
 #endif
 
 	if (pui32Loading)
