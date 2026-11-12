@@ -78,7 +78,7 @@ jobs:
           
           if [ "${{ github.event.inputs.EXTRACT_MODULES }}" == "true" ]; then
             mkdir -p modules_extracted
-            find out/ -name "mtk_gpufreq_mt6789.ko" -exec cp {} modules_extracted/ \;
+            find out/ -name "*.ko" -exec cp {} modules_extracted/ \;
             if [ -n "$(ls -A modules_extracted)" ]; then
               zip -r kernel_modules.zip modules_extracted/
             else
