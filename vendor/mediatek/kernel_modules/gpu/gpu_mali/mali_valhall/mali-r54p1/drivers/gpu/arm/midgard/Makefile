@@ -306,3 +306,4 @@ endif
 ccflags-y += -Wno-error -Wno-missing-declarations
 ccflags-y += -include $(KO_CODE_PATH)/platform/mtk_platform_common/mtk_ged_compat.h
 mali_kbase-y += platform/mtk_platform_common/mtk_ged_compat.o
+ccflags-y += -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=missing-prototypes
