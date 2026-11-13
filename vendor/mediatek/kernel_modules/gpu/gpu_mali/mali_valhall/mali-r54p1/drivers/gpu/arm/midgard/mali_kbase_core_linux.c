@@ -156,6 +156,7 @@
 #endif /* CONFIG_MALI_MTK_CROSS_QUEUE_SYNC_RECOVERY */
 
 #if IS_ENABLED(CONFIG_MALI_MTK_GPU_BM_2)
+#include <ged_gpu_bm.h>
 #include <gpu_bm.h>
 #if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_SUPPORT)
 #include <sspm_reservedmem_define.h>
@@ -269,11 +270,15 @@ static int mtk_bandwith_resource_init(struct kbase_device *kbdev)
 #if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_SUPPORT)
 	get_rec_addr();
 
-	if(gpu_info_ref == NULL) {
-		err = -1;
-		pr_info("%s: [GPU_QOS] get sspm reserved memory fail\n", __func__);
-		return err;
-	}
+	if (gpu_info_ref == NULL) {
+                pr_info("%s: [GPU_QOS] no sspm memory, using local buffer\n", __func__);
+                gpu_info_ref = kzalloc(sizeof(*gpu_info_ref), GFP_KERNEL);
+                if (gpu_info_ref == NULL)
+                        return -ENOMEM;
+                kbdev->v1 = gpu_info_ref;
+                kbdev->v1->version = 1;
+                return 0;
+        }
 	kbdev->v1 = gpu_info_ref;
 	kbdev->v1->version = 1;
 	kbdev->job_status_addr.phyaddr = rec_phys_addr;

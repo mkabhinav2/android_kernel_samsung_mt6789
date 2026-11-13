@@ -181,6 +181,10 @@ ifeq ($(CONFIG_MALI_MTK_SLC_DYNAMIC_POLICY_V2), y)
 ccflags-y += -I$(DEVICE_MODULES_PATH)/drivers/gpu/mediatek/gpu_pdma/include
 endif
 
+ifeq ($(CONFIG_MALI_MTK_GPU_BM_2),y)
+ccflags-y += -DCONFIG_MALI_MTK_GPU_BM_2=1
+endif
+
 subdir-ccflags-y += $(ccflags-y)
 
 #

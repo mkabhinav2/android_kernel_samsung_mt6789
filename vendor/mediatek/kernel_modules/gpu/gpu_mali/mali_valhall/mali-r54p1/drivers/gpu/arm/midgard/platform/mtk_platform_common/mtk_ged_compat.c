@@ -19,3 +19,9 @@ int ged_kpi_get_target_fps(void){ return 60; }
 void ged_mali_event_init(void){ }
 int gpufreq_dual_commit(int gpu_oppidx, int stack_oppidx){ return 0; }
 void gpufreq_dump_infra_status_logbuffer(char *log_buf, int *log_len, int log_size){ if (log_len) *log_len = 0; }
+
+/* ged does not export qos_get_frame_nr(); BM_2 only uses it for QoS stats */
+u32 qos_get_frame_nr(void)
+{
+	return 0;
+}

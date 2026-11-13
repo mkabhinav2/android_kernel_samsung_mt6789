@@ -41,8 +41,8 @@
 #include <backend/gpu/mali_kbase_pm_internal.h>
 
 #if IS_ENABLED(CONFIG_MALI_MTK_GPU_BM_2)
-#include <gpu_bm.h>
 #include <ged_gpu_bm.h>
+#include <gpu_bm.h>
 #endif
 
 /**
